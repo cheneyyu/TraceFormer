@@ -4,7 +4,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
 
-from .model import DirectionAwareLoss, Traceformer
+from .model import DirectionAwareLoss, GeneVAE, Traceformer
 
 
 class TrajectoryDataset(Dataset):
@@ -27,6 +27,24 @@ class TrajectoryDataset(Dataset):
         expr = self.data[seq]
         stem = self.stemness[seq]
         return expr.astype(np.float32), stem.astype(np.float32)
+
+
+class GeneExpressionDataset(Dataset):
+    """Dataset yielding per-cell log1p-normalised expression vectors."""
+
+    def __init__(self, adata) -> None:
+        if "log1p" not in adata.layers:
+            raise ValueError("`adata.layers['log1p']` missing. Run preprocessing first.")
+        matrix = adata.layers["log1p"]
+        if hasattr(matrix, "toarray"):
+            matrix = matrix.toarray()
+        self.data = matrix.astype(np.float32)
+
+    def __len__(self) -> int:
+        return self.data.shape[0]
+
+    def __getitem__(self, idx: int) -> np.ndarray:
+        return self.data[idx]
 
 
 def _pad_stack(arr_list: List[np.ndarray], max_len: int) -> np.ndarray:
@@ -95,3 +113,37 @@ def train_traceformer(
 def create_dataloader(adata, sequences: Sequence[Sequence[int]], batch_size: int = 8, shuffle: bool = True):
     dataset = TrajectoryDataset(adata, sequences)
     return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, collate_fn=collate_padded)
+
+
+def create_gene_dataloader(adata, batch_size: int = 128, shuffle: bool = True) -> DataLoader:
+    dataset = GeneExpressionDataset(adata)
+    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
+
+
+def train_vae(
+    model: GeneVAE,
+    dataloader: DataLoader,
+    device: torch.device,
+    epochs: int = 50,
+    lr: float = 1e-3,
+    weight_decay: float = 1e-4,
+    kl_weight: float = 1e-3,
+) -> None:
+    model.to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+
+    model.train()
+    for epoch in range(1, epochs + 1):
+        epoch_loss = 0.0
+        for batch in dataloader:
+            inputs = batch.to(device)
+
+            optimizer.zero_grad()
+            recon, mu, logvar = model(inputs)
+            loss = model.loss_function(recon, inputs, mu, logvar, kl_weight=kl_weight)
+            loss.backward()
+            optimizer.step()
+
+            epoch_loss += loss.item() * inputs.size(0)
+        avg_loss = epoch_loss / len(dataloader.dataset)
+        print(f"Epoch {epoch}: loss={avg_loss:.4f}")
