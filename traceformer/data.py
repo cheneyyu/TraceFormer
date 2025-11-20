@@ -110,10 +110,14 @@ def paga_edge_list(adata: AnnData, min_connectivity: float = 0.05) -> List[Tuple
 def generate_trajectory_sequences(
     adata: AnnData,
     n_walks_per_cell: int = 2,
-    max_len: int = 10,
+    max_len: int | None = 10,
     min_connectivity: float = 0.05,
 ) -> List[List[int]]:
-    """Generate directed random-walk trajectories constrained by stemness gradients."""
+    """Generate directed random-walk trajectories constrained by stemness gradients.
+
+    Walks now continue until no neighbour has lower stemness (or ``max_len`` is reached),
+    allowing longer sentences that better exploit the transformer's sequence modelling.
+    """
 
     if "stemness_norm" not in adata.obs:
         raise ValueError("Stemness scores missing; run `score_stemness` first.")
@@ -142,7 +146,7 @@ def generate_trajectory_sequences(
             for _ in range(n_walks_per_cell):
                 walk = [int(start)]
                 current = start
-                for _ in range(max_len - 1):
+                while max_len is None or len(walk) < max_len:
                     neighbors = [
                         n for n in neighbor_indices[current] if stemness[n] < stemness[current]
                     ]
@@ -150,8 +154,6 @@ def generate_trajectory_sequences(
                         break
                     current = int(np.random.choice(neighbors))
                     walk.append(current)
-                    if adata.obs["leiden"].iat[current] == end_cluster:
-                        break
                 if len(walk) > 1:
                     sequences.append(walk)
     return sequences
